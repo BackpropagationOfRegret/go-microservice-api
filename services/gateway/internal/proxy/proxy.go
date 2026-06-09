@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
+
+	"github.com/kostayne/go-microservice/pkg/telemetry"
 )
 
 type Client struct {
@@ -13,7 +16,7 @@ type Client struct {
 }
 
 func New() *Client {
-	return &Client{http: &http.Client{}}
+	return &Client{http: telemetry.HTTPClient(30 * time.Second)}
 }
 
 func (c *Client) Get(url string, result any) error {

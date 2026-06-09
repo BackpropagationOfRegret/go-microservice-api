@@ -13,10 +13,12 @@ import (
 
 type Producer struct {
 	writer *kafka.Writer
+	topic  string
 }
 
 func NewProducer(brokers []string, topic string) *Producer {
 	return &Producer{
+		topic: topic,
 		writer: &kafka.Writer{
 			Addr:         kafka.TCP(brokers...),
 			Topic:        topic,
@@ -36,7 +38,16 @@ func (p *Producer) Publish(ctx context.Context, eventType string, payload any) e
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
 	}
-	return p.writer.WriteMessages(ctx, kafka.Message{Value: data})
+
+	headers := injectTraceContext(ctx)
+	ctx, span := startProducerSpan(ctx, p.topic, eventType)
+	defer span.End()
+
+	if err := p.writer.WriteMessages(ctx, kafka.Message{Value: data, Headers: headers}); err != nil {
+		recordSpanError(span, err)
+		return err
+	}
+	return nil
 }
 
 func (p *Producer) Close() error {
@@ -45,10 +56,12 @@ func (p *Producer) Close() error {
 
 type Consumer struct {
 	reader *kafka.Reader
+	topic  string
 }
 
 func NewConsumer(brokers []string, topic, groupID string) *Consumer {
 	return &Consumer{
+		topic: topic,
 		reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers:        brokers,
 			Topic:          topic,
@@ -79,10 +92,14 @@ func (c *Consumer) Run(ctx context.Context, handler Handler) error {
 			continue
 		}
 
-		if err := handler(ctx, env); err != nil {
-			log.Printf("kafka handler error on topic %s: %v", c.reader.Config().Topic, err)
-			continue
+		msgCtx := extractTraceContext(msg.Headers)
+		msgCtx, span := startConsumerSpan(msgCtx, c.topic)
+		handlerErr := handler(msgCtx, env)
+		if handlerErr != nil {
+			recordSpanError(span, handlerErr)
+			log.Printf("kafka handler error on topic %s: %v", c.topic, handlerErr)
 		}
+		span.End()
 
 		if err := c.reader.CommitMessages(ctx, msg); err != nil {
 			return fmt.Errorf("commit message: %w", err)

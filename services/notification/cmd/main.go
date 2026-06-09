@@ -9,12 +9,21 @@ import (
 	"github.com/kostayne/go-microservice/pkg/config"
 	"github.com/kostayne/go-microservice/pkg/events"
 	"github.com/kostayne/go-microservice/pkg/kafka"
+	"github.com/kostayne/go-microservice/pkg/telemetry"
 	"github.com/kostayne/go-microservice/services/notification/internal/handler"
 	"github.com/kostayne/go-microservice/services/notification/internal/notifier"
 )
 
+const serviceName = "notification-svc"
+
 func main() {
 	log.Printf("notification-svc starting (APP_ENV=%s)", config.AppEnv())
+
+	shutdown, err := telemetry.Init(context.Background(), serviceName)
+	if err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
 
 	port := config.String("PORT", "8086")
 	brokers := config.KafkaBrokers()
@@ -48,7 +57,7 @@ func main() {
 	h := handler.New(svc)
 	srv := &http.Server{
 		Addr:         ":" + port,
-		Handler:      h.Routes(),
+		Handler:      telemetry.WrapHTTP(serviceName, h.Routes()),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}

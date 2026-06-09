@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
+
+	"github.com/kostayne/go-microservice/pkg/telemetry"
 )
 
 type UserClient struct {
@@ -14,7 +17,7 @@ type UserClient struct {
 }
 
 func NewUserClient(baseURL string) *UserClient {
-	return &UserClient{baseURL: baseURL, http: &http.Client{}}
+	return &UserClient{baseURL: baseURL, http: telemetry.HTTPClient(10 * time.Second)}
 }
 
 func (c *UserClient) ValidateUser(ctx context.Context, userID string) error {
@@ -39,7 +42,7 @@ type RestaurantClient struct {
 }
 
 func NewRestaurantClient(baseURL string) *RestaurantClient {
-	return &RestaurantClient{baseURL: baseURL, http: &http.Client{}}
+	return &RestaurantClient{baseURL: baseURL, http: telemetry.HTTPClient(10 * time.Second)}
 }
 
 type menuItem struct {

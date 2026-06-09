@@ -21,12 +21,12 @@ logs:
 	$(COMPOSE) logs -f
 
 tidy:
-	@for dir in pkg/events pkg/kafka pkg/auth pkg/config services/user services/restaurant services/order services/payment services/delivery services/notification services/gateway; do \
+	@for dir in pkg/events pkg/kafka pkg/auth pkg/config pkg/telemetry services/user services/restaurant services/order services/payment services/delivery services/notification services/gateway; do \
 		(cd $$dir && go mod tidy); \
 	done
 
 test:
-	@for dir in pkg/events pkg/kafka pkg/auth pkg/config services/user services/restaurant services/order services/payment services/delivery services/notification services/gateway; do \
+	@for dir in pkg/events pkg/kafka pkg/auth pkg/config pkg/telemetry services/user services/restaurant services/order services/payment services/delivery services/notification services/gateway; do \
 		echo "==> $$dir" && (cd $$dir && go test ./...); \
 	done
 
@@ -36,6 +36,7 @@ docs:
 	@echo "OpenAPI:              http://localhost:$${GATEWAY_PORT:-8090}/openapi.yaml"
 	@echo "Scalar:               http://localhost:$${GATEWAY_PORT:-8090}/docs"
 	@echo "Traefik dashboard:    http://localhost:$${TRAEFIK_DASHBOARD_PORT:-8088}"
+	@echo "Jaeger UI:             http://localhost:$${JAEGER_UI_PORT:-16686}"
 	@echo ""
 	@echo "Environments: make up ENV=dev|stage|prod (uses deploy/env/\$$ENV.env)"
 

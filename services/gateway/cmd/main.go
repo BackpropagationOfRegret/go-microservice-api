@@ -1,17 +1,27 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/cors"
 	"github.com/kostayne/go-microservice/pkg/config"
+	"github.com/kostayne/go-microservice/pkg/telemetry"
 	"github.com/kostayne/go-microservice/services/gateway/internal/handler"
 )
 
+const serviceName = "api-gateway"
+
 func main() {
 	log.Printf("api-gateway starting (APP_ENV=%s)", config.AppEnv())
+
+	shutdown, err := telemetry.Init(context.Background(), serviceName)
+	if err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
 
 	port := config.String("PORT", "8080")
 	jwtSecret := config.String("JWT_SECRET", "dev-secret-change-me")
@@ -37,7 +47,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:         ":" + port,
-		Handler:      corsHandler(h.Routes()),
+		Handler:      telemetry.WrapHTTP(serviceName, corsHandler(h.Routes())),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}

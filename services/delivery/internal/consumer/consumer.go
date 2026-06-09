@@ -10,6 +10,7 @@ import (
 
 	"github.com/kostayne/go-microservice/pkg/events"
 	"github.com/kostayne/go-microservice/pkg/kafka"
+	"github.com/kostayne/go-microservice/pkg/telemetry"
 	"github.com/kostayne/go-microservice/services/delivery/internal/model"
 	"github.com/kostayne/go-microservice/services/delivery/internal/repository"
 )
@@ -37,7 +38,7 @@ func NewDispatcher(
 		deliveredProducer: delivered,
 		failedProducer:    failed,
 		deliveryDuration:  deliveryDuration,
-		http:              &http.Client{Timeout: 10 * time.Second},
+		http:              telemetry.HTTPClient(10 * time.Second),
 	}
 }
 

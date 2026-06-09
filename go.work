@@ -5,6 +5,7 @@ use (
 	./pkg/kafka
 	./pkg/auth
 	./pkg/config
+	./pkg/telemetry
 	./services/user
 	./services/restaurant
 	./services/order

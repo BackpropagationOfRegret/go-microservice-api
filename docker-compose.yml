@@ -3,6 +3,8 @@ x-service-env: &service-env
   KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
   JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
   JWT_TTL: ${JWT_TTL:-24h}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
 
 services:
   postgres:
@@ -55,6 +57,14 @@ services:
       - ./deploy/kafka-init.sh:/kafka-init.sh:ro
     entrypoint: ["/bin/sh", "/kafka-init.sh"]
     restart: "no"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+      - "${JAEGER_OTLP_PORT:-4317}:4317"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
 
   user-svc:
     build:

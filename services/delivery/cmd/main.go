@@ -10,14 +10,23 @@ import (
 	"github.com/kostayne/go-microservice/pkg/config"
 	"github.com/kostayne/go-microservice/pkg/events"
 	"github.com/kostayne/go-microservice/pkg/kafka"
+	"github.com/kostayne/go-microservice/pkg/telemetry"
 	"github.com/kostayne/go-microservice/services/delivery/internal/consumer"
 	"github.com/kostayne/go-microservice/services/delivery/internal/handler"
 	"github.com/kostayne/go-microservice/services/delivery/internal/repository"
 	_ "github.com/lib/pq"
 )
 
+const serviceName = "delivery-svc"
+
 func main() {
 	log.Printf("delivery-svc starting (APP_ENV=%s)", config.AppEnv())
+
+	shutdown, err := telemetry.Init(context.Background(), serviceName)
+	if err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
 
 	dsn := config.String("DATABASE_URL", "postgres://food:food@localhost:5432/delivery_db?sslmode=disable")
 	port := config.String("PORT", "8085")
@@ -64,7 +73,7 @@ func main() {
 	h := handler.New(repo)
 	srv := &http.Server{
 		Addr:         ":" + port,
-		Handler:      h.Routes(),
+		Handler:      telemetry.WrapHTTP(serviceName, h.Routes()),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
