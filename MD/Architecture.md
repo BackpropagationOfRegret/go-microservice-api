@@ -365,6 +365,8 @@ deploy/env/prod.env.example     # шаблон production
 
 ```bash
 make up ENV=dev      # использует deploy/env/dev.env
+make down            # остановить контейнеры, данные PostgreSQL сохраняются
+make down-clean      # остановить и удалить volumes (полный сброс БД)
 make up ENV=stage    # нужен deploy/env/stage.env (из .example)
 make up ENV=prod     # нужен deploy/env/prod.env (из .example)
 ```

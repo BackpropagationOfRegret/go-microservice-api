@@ -1,4 +1,4 @@
-.PHONY: up down build logs tidy test demo docs frontend-dev env-init
+.PHONY: up down down-clean build logs tidy test demo docs frontend-dev env-init
 
 ENV ?= dev
 ENV_FILE := deploy/env/$(ENV).env
@@ -13,6 +13,9 @@ up: env-init
 	$(COMPOSE) up --build -d
 
 down:
+	$(COMPOSE) down
+
+down-clean:
 	$(COMPOSE) down -v
 
 build: env-init
