@@ -25,6 +25,7 @@ const STATUS_ORDER: Record<OrderStatus, number> = {
   DELIVERING: 4,
   DELIVERED: 5,
   CANCELLED: -1,
+  REFUNDED: -1,
 };
 
 type OrderStatusStepperProps = {
