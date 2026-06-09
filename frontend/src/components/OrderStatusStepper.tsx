@@ -32,10 +32,10 @@ type OrderStatusStepperProps = {
 };
 
 export const OrderStatusStepper = ({ status }: OrderStatusStepperProps) => {
-  if (status === "CANCELLED") {
+  if (status === "CANCELLED" || status === "REFUNDED") {
     return (
       <Typography color="error" fontWeight={600}>
-        Заказ отменён
+        {status === "REFUNDED" ? "Заказ отменён, средства возвращены" : "Заказ отменён"}
       </Typography>
     );
   }

@@ -38,7 +38,8 @@ export type OrderStatus =
   | "READY"
   | "DELIVERING"
   | "DELIVERED"
-  | "CANCELLED";
+  | "CANCELLED"
+  | "REFUNDED";
 
 export type Payment = {
   id: string;

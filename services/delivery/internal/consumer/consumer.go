@@ -3,7 +3,6 @@ package consumer
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -20,16 +19,25 @@ type Dispatcher struct {
 	orderSvcURL       string
 	assignedProducer  *kafka.Producer
 	deliveredProducer *kafka.Producer
+	failedProducer    *kafka.Producer
+	deliveryDuration  time.Duration
 	http              *http.Client
 }
 
-func NewDispatcher(repo *repository.Repository, orderSvcURL string, assigned, delivered *kafka.Producer) *Dispatcher {
+func NewDispatcher(
+	repo *repository.Repository,
+	orderSvcURL string,
+	assigned, delivered, failed *kafka.Producer,
+	deliveryDuration time.Duration,
+) *Dispatcher {
 	return &Dispatcher{
 		repo:              repo,
 		orderSvcURL:       orderSvcURL,
 		assignedProducer:  assigned,
 		deliveredProducer: delivered,
-		http:              &http.Client{Timeout: 5 * time.Second},
+		failedProducer:    failed,
+		deliveryDuration:  deliveryDuration,
+		http:              &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -41,7 +49,13 @@ func (d *Dispatcher) HandleOrderReady(ctx context.Context, env events.Envelope) 
 
 	courier, err := d.repo.FindAvailableCourier(ctx)
 	if err != nil {
-		return fmt.Errorf("assign courier: %w", err)
+		userID, _ := d.fetchOrderUserID(ready.OrderID)
+		log.Printf("[delivery-svc] no courier for order %s", ready.OrderID)
+		return d.failedProducer.Publish(ctx, events.TopicDeliveryFailed, events.DeliveryFailed{
+			OrderID: ready.OrderID,
+			UserID:  userID,
+			Reason:  "no available courier",
+		})
 	}
 
 	if err := d.repo.SetCourierStatus(ctx, courier.ID, model.CourierBusy); err != nil {
@@ -60,6 +74,7 @@ func (d *Dispatcher) HandleOrderReady(ctx context.Context, env events.Envelope) 
 		CourierID: courier.ID,
 		UserID:    userID,
 	}); err != nil {
+		_ = d.repo.SetCourierStatus(ctx, courier.ID, model.CourierAvailable)
 		return err
 	}
 
@@ -87,7 +102,7 @@ func (d *Dispatcher) fetchOrderUserID(orderID string) (string, error) {
 }
 
 func (d *Dispatcher) simulateDelivery(courierID, orderID, userID string) {
-	time.Sleep(5 * time.Second)
+	time.Sleep(d.deliveryDuration)
 
 	ctx := context.Background()
 	if err := d.repo.SetCourierStatus(ctx, courierID, model.CourierAvailable); err != nil {

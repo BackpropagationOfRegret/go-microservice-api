@@ -74,6 +74,48 @@ func (s *Service) HandleEvent(ctx context.Context, env events.Envelope) error {
 		}
 		s.send("push", "", p.OrderID, "Ошибка оплаты: "+p.Reason)
 
+	case events.TopicOrderPreparationFailed:
+		p, err := kafka.DecodePayload[events.OrderPreparationFailed](env)
+		if err != nil {
+			return err
+		}
+		s.send("push", p.UserID, p.OrderID, "Заказ отменён: "+p.Reason)
+		s.send("email", p.UserID, p.OrderID, "Кухня не может выполнить заказ. Оформляем возврат.")
+
+	case events.TopicDeliveryFailed:
+		p, err := kafka.DecodePayload[events.DeliveryFailed](env)
+		if err != nil {
+			return err
+		}
+		s.send("push", p.UserID, p.OrderID, "Доставка недоступна: "+p.Reason)
+		s.send("sms", p.UserID, p.OrderID, "Курьер не найден. Деньги будут возвращены.")
+
+	case events.TopicOrderCancelled:
+		p, err := kafka.DecodePayload[events.OrderCancelled](env)
+		if err != nil {
+			return err
+		}
+		msg := "Заказ отменён: " + p.Reason
+		if p.RefundRequired {
+			msg += ". Ожидайте возврат."
+		}
+		s.send("push", p.UserID, p.OrderID, msg)
+
+	case events.TopicPaymentRefundRequested:
+		p, err := kafka.DecodePayload[events.PaymentRefundRequested](env)
+		if err != nil {
+			return err
+		}
+		s.send("email", p.UserID, p.OrderID, "Инициирован возврат средств")
+
+	case events.TopicPaymentRefunded:
+		p, err := kafka.DecodePayload[events.PaymentRefunded](env)
+		if err != nil {
+			return err
+		}
+		s.send("push", "", p.OrderID, "Возврат выполнен")
+		s.send("email", "", p.OrderID, "Средства возвращены на карту")
+
 	case events.TopicOrderReady:
 		p, err := kafka.DecodePayload[events.OrderReady](env)
 		if err != nil {

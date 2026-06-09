@@ -15,10 +15,11 @@ import (
 type Handler struct {
 	repo      *repository.Repository
 	jwtSecret string
+	jwtTTL    time.Duration
 }
 
-func New(repo *repository.Repository, jwtSecret string) *Handler {
-	return &Handler{repo: repo, jwtSecret: jwtSecret}
+func New(repo *repository.Repository, jwtSecret string, jwtTTL time.Duration) *Handler {
+	return &Handler{repo: repo, jwtSecret: jwtSecret, jwtTTL: jwtTTL}
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -67,7 +68,7 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Email, 24*time.Hour)
+	token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Email, h.jwtTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "generate token")
 		return
@@ -101,7 +102,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Email, 24*time.Hour)
+	token, err := auth.GenerateToken(h.jwtSecret, user.ID, user.Email, h.jwtTTL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "generate token")
 		return

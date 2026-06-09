@@ -4,10 +4,9 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"os"
-	"strings"
 	"time"
 
+	"github.com/kostayne/go-microservice/pkg/config"
 	"github.com/kostayne/go-microservice/pkg/events"
 	"github.com/kostayne/go-microservice/pkg/kafka"
 	"github.com/kostayne/go-microservice/services/notification/internal/handler"
@@ -15,14 +14,21 @@ import (
 )
 
 func main() {
-	port := env("PORT", "8086")
-	brokers := strings.Split(env("KAFKA_BROKERS", "localhost:9092"), ",")
+	log.Printf("notification-svc starting (APP_ENV=%s)", config.AppEnv())
+
+	port := config.String("PORT", "8086")
+	brokers := config.KafkaBrokers()
 
 	svc := notifier.New()
 	topics := []string{
 		events.TopicOrderCreated,
 		events.TopicPaymentProcessed,
 		events.TopicPaymentFailed,
+		events.TopicPaymentRefundRequested,
+		events.TopicPaymentRefunded,
+		events.TopicOrderPreparationFailed,
+		events.TopicDeliveryFailed,
+		events.TopicOrderCancelled,
 		events.TopicOrderReady,
 		events.TopicCourierAssigned,
 		events.TopicOrderDelivered,
@@ -51,11 +57,4 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve: %v", err)
 	}
-}
-
-func env(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

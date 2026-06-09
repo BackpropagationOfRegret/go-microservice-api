@@ -11,14 +11,22 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+const (
+	StatusSuccess  = "SUCCESS"
+	StatusFailed   = "FAILED"
+	StatusRefunded = "REFUNDED"
+)
+
 type Payment struct {
-	ID            string    `json:"id"`
-	OrderID       string    `json:"order_id"`
-	Amount        float64   `json:"amount"`
-	Method        string    `json:"method"`
-	Status        string    `json:"status"`
-	TransactionID string    `json:"transaction_id"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID                  string    `json:"id"`
+	OrderID             string    `json:"order_id"`
+	Amount              float64   `json:"amount"`
+	Method              string    `json:"method"`
+	Status              string    `json:"status"`
+	TransactionID       string    `json:"transaction_id"`
+	RefundTransactionID string    `json:"refund_transaction_id,omitempty"`
+	RefundReason        string    `json:"refund_reason,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 type Repository struct {
@@ -38,8 +46,12 @@ func (r *Repository) Migrate(ctx context.Context) error {
 			method TEXT NOT NULL DEFAULT 'card',
 			status TEXT NOT NULL,
 			transaction_id TEXT,
+			refund_transaction_id TEXT,
+			refund_reason TEXT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
+		ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_transaction_id TEXT;
+		ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_reason TEXT;
 	`)
 	return err
 }
@@ -60,11 +72,28 @@ func (r *Repository) Create(ctx context.Context, p *Payment) error {
 func (r *Repository) GetByOrderID(ctx context.Context, orderID string) (*Payment, error) {
 	p := &Payment{}
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, order_id, amount, method, status, COALESCE(transaction_id,''), created_at FROM payments WHERE order_id = $1`,
+		`SELECT id, order_id, amount, method, status,
+		        COALESCE(transaction_id,''), COALESCE(refund_transaction_id,''), COALESCE(refund_reason,''), created_at
+		 FROM payments WHERE order_id = $1`,
 		orderID,
-	).Scan(&p.ID, &p.OrderID, &p.Amount, &p.Method, &p.Status, &p.TransactionID, &p.CreatedAt)
+	).Scan(&p.ID, &p.OrderID, &p.Amount, &p.Method, &p.Status, &p.TransactionID, &p.RefundTransactionID, &p.RefundReason, &p.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	return p, err
+}
+
+func (r *Repository) MarkRefunded(ctx context.Context, orderID, refundTxID, reason string) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE payments SET status = $1, refund_transaction_id = $2, refund_reason = $3 WHERE order_id = $4 AND status = $5`,
+		StatusRefunded, refundTxID, reason, orderID, StatusSuccess,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

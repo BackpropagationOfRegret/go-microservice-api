@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"strings"
 	"time"
 
+	"github.com/kostayne/go-microservice/pkg/config"
 	"github.com/kostayne/go-microservice/pkg/events"
 	"github.com/kostayne/go-microservice/pkg/kafka"
 	"github.com/kostayne/go-microservice/services/order/internal/client"
@@ -19,11 +19,13 @@ import (
 )
 
 func main() {
-	dsn := env("DATABASE_URL", "postgres://food:food@localhost:5432/order_db?sslmode=disable")
-	port := env("PORT", "8083")
-	brokers := strings.Split(env("KAFKA_BROKERS", "localhost:9092"), ",")
-	userURL := env("USER_SVC_URL", "http://localhost:8081")
-	restaurantURL := env("RESTAURANT_SVC_URL", "http://localhost:8082")
+	log.Printf("order-svc starting (APP_ENV=%s)", config.AppEnv())
+
+	dsn := config.String("DATABASE_URL", "postgres://food:food@localhost:5432/order_db?sslmode=disable")
+	port := config.String("PORT", "8083")
+	brokers := config.KafkaBrokers()
+	userURL := config.String("USER_SVC_URL", "http://localhost:8081")
+	restaurantURL := config.String("RESTAURANT_SVC_URL", "http://localhost:8082")
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -38,25 +40,20 @@ func main() {
 		log.Fatalf("migrate: %v", err)
 	}
 
-	orderCreatedProducer := kafka.NewProducer(brokers, events.TopicOrderCreated)
-	orderPaidProducer := kafka.NewProducer(brokers, events.TopicOrderPaid)
-	statusProducer := kafka.NewProducer(brokers, events.TopicOrderStatusChanged)
-	defer orderCreatedProducer.Close()
-	defer orderPaidProducer.Close()
-	defer statusProducer.Close()
-
-	// Multi-topic producer wrapper
-	multiProducer := &multiTopicProducer{
-		created: orderCreatedProducer,
-		paid:    orderPaidProducer,
-		status:  statusProducer,
-	}
+	producer := newTopicProducer(brokers,
+		events.TopicOrderCreated,
+		events.TopicOrderPaid,
+		events.TopicOrderStatusChanged,
+		events.TopicPaymentRefundRequested,
+		events.TopicOrderCancelled,
+	)
+	defer producer.Close()
 
 	svc := service.New(
 		repo,
 		client.NewUserClient(userURL),
 		client.NewRestaurantClient(restaurantURL),
-		multiProducer,
+		producer,
 	)
 
 	startConsumers(brokers, svc)
@@ -75,73 +72,97 @@ func main() {
 	}
 }
 
-type multiTopicProducer struct {
-	created *kafka.Producer
-	paid    *kafka.Producer
-	status  *kafka.Producer
+type topicProducer struct {
+	writers map[string]*kafka.Producer
 }
 
-func (m *multiTopicProducer) Publish(ctx context.Context, topic string, payload any) error {
-	switch topic {
-	case events.TopicOrderCreated:
-		return m.created.Publish(ctx, topic, payload)
-	case events.TopicOrderPaid:
-		return m.paid.Publish(ctx, topic, payload)
-	case events.TopicOrderStatusChanged:
-		return m.status.Publish(ctx, topic, payload)
-	default:
-		return m.status.Publish(ctx, topic, payload)
+func newTopicProducer(brokers []string, topics ...string) *topicProducer {
+	tp := &topicProducer{writers: make(map[string]*kafka.Producer, len(topics))}
+	for _, topic := range topics {
+		tp.writers[topic] = kafka.NewProducer(brokers, topic)
+	}
+	return tp
+}
+
+func (t *topicProducer) Publish(ctx context.Context, topic string, payload any) error {
+	w, ok := t.writers[topic]
+	if !ok {
+		return fmt.Errorf("unknown topic: %s", topic)
+	}
+	return w.Publish(ctx, topic, payload)
+}
+
+func (t *topicProducer) Close() {
+	for _, w := range t.writers {
+		_ = w.Close()
 	}
 }
 
 func startConsumers(brokers []string, svc *service.Service) {
-	paymentProcessed := kafka.NewConsumer(brokers, events.TopicPaymentProcessed, "order-svc-payment")
-	paymentFailed := kafka.NewConsumer(brokers, events.TopicPaymentFailed, "order-svc-payment-failed")
-	courierAssigned := kafka.NewConsumer(brokers, events.TopicCourierAssigned, "order-svc-courier")
-	orderDelivered := kafka.NewConsumer(brokers, events.TopicOrderDelivered, "order-svc-delivered")
-
-	go runConsumer(paymentProcessed, func(ctx context.Context, env events.Envelope) error {
-		p, err := kafka.DecodePayload[events.PaymentProcessed](env)
-		if err != nil {
-			return err
-		}
-		return svc.HandlePaymentProcessed(ctx, p)
-	})
-
-	go runConsumer(paymentFailed, func(ctx context.Context, env events.Envelope) error {
-		p, err := kafka.DecodePayload[events.PaymentFailed](env)
-		if err != nil {
-			return err
-		}
-		return svc.HandlePaymentFailed(ctx, p)
-	})
-
-	go runConsumer(courierAssigned, func(ctx context.Context, env events.Envelope) error {
-		p, err := kafka.DecodePayload[events.CourierAssigned](env)
-		if err != nil {
-			return err
-		}
-		return svc.HandleCourierAssigned(ctx, p)
-	})
-
-	go runConsumer(orderDelivered, func(ctx context.Context, env events.Envelope) error {
-		p, err := kafka.DecodePayload[events.OrderDelivered](env)
-		if err != nil {
-			return err
-		}
-		return svc.HandleOrderDelivered(ctx, p)
-	})
-}
-
-func runConsumer(c *kafka.Consumer, handler kafka.Handler) {
-	if err := c.Run(context.Background(), handler); err != nil {
-		log.Printf("consumer stopped: %v", err)
+	consumers := []struct {
+		topic   string
+		group   string
+		handler kafka.Handler
+	}{
+		{events.TopicPaymentProcessed, "order-svc-payment", func(ctx context.Context, env events.Envelope) error {
+			p, err := kafka.DecodePayload[events.PaymentProcessed](env)
+			if err != nil {
+				return err
+			}
+			return svc.HandlePaymentProcessed(ctx, p)
+		}},
+		{events.TopicPaymentFailed, "order-svc-payment-failed", func(ctx context.Context, env events.Envelope) error {
+			p, err := kafka.DecodePayload[events.PaymentFailed](env)
+			if err != nil {
+				return err
+			}
+			return svc.HandlePaymentFailed(ctx, p)
+		}},
+		{events.TopicOrderPreparationFailed, "order-svc-prep-failed", func(ctx context.Context, env events.Envelope) error {
+			p, err := kafka.DecodePayload[events.OrderPreparationFailed](env)
+			if err != nil {
+				return err
+			}
+			return svc.HandlePreparationFailed(ctx, p)
+		}},
+		{events.TopicDeliveryFailed, "order-svc-delivery-failed", func(ctx context.Context, env events.Envelope) error {
+			p, err := kafka.DecodePayload[events.DeliveryFailed](env)
+			if err != nil {
+				return err
+			}
+			return svc.HandleDeliveryFailed(ctx, p)
+		}},
+		{events.TopicPaymentRefunded, "order-svc-refunded", func(ctx context.Context, env events.Envelope) error {
+			p, err := kafka.DecodePayload[events.PaymentRefunded](env)
+			if err != nil {
+				return err
+			}
+			return svc.HandlePaymentRefunded(ctx, p)
+		}},
+		{events.TopicCourierAssigned, "order-svc-courier", func(ctx context.Context, env events.Envelope) error {
+			p, err := kafka.DecodePayload[events.CourierAssigned](env)
+			if err != nil {
+				return err
+			}
+			return svc.HandleCourierAssigned(ctx, p)
+		}},
+		{events.TopicOrderDelivered, "order-svc-delivered", func(ctx context.Context, env events.Envelope) error {
+			p, err := kafka.DecodePayload[events.OrderDelivered](env)
+			if err != nil {
+				return err
+			}
+			return svc.HandleOrderDelivered(ctx, p)
+		}},
 	}
-}
 
-func env(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+	for _, c := range consumers {
+		topic := c.topic
+		consumer := kafka.NewConsumer(brokers, topic, c.group)
+		go func(cons *kafka.Consumer, h kafka.Handler, topicName string) {
+			defer cons.Close()
+			if err := cons.Run(context.Background(), h); err != nil {
+				log.Printf("consumer %s stopped: %v", topicName, err)
+			}
+		}(consumer, c.handler, topic)
 	}
-	return fallback
 }

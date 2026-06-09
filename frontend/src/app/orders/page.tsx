@@ -25,6 +25,7 @@ const STATUS_COLOR: Record<OrderStatus, "default" | "primary" | "success" | "err
   DELIVERING: "primary",
   DELIVERED: "success",
   CANCELLED: "error",
+  REFUNDED: "success",
 };
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
@@ -35,6 +36,7 @@ const STATUS_LABEL: Record<OrderStatus, string> = {
   DELIVERING: "В пути",
   DELIVERED: "Доставлен",
   CANCELLED: "Отменён",
+  REFUNDED: "Возврат",
 };
 
 export default function OrdersPage() {

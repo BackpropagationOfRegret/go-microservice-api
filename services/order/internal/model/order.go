@@ -10,6 +10,7 @@ const (
 	StatusDelivering = "DELIVERING"
 	StatusDelivered = "DELIVERED"
 	StatusCancelled = "CANCELLED"
+	StatusRefunded  = "REFUNDED"
 )
 
 type OrderItem struct {

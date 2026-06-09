@@ -4,8 +4,10 @@
 /vendor/
 .idea/
 .vscode/
-*.env
+.env
 .env.local
+deploy/env/stage.env
+deploy/env/prod.env
 .DS_Store
 frontend/node_modules
 frontend/.next

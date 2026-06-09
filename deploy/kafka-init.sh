@@ -7,10 +7,15 @@ topics="
 order.created
 payment.processed
 payment.failed
+payment.refund.requested
+payment.refunded
 order.paid
+order.preparation.failed
 order.ready
+delivery.failed
 courier.assigned
 order.delivered
+order.cancelled
 order.status.changed
 "
 

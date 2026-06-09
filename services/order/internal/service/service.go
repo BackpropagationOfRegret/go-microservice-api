@@ -111,11 +111,19 @@ func (s *Service) ListUserOrders(ctx context.Context, userID string) ([]model.Or
 }
 
 func (s *Service) HandlePaymentProcessed(ctx context.Context, payload events.PaymentProcessed) error {
+	order, err := s.repo.GetByID(ctx, payload.OrderID)
+	if err != nil {
+		return err
+	}
+	if isTerminal(order.Status) || order.Status == model.StatusPaid {
+		return nil
+	}
+
 	if err := s.repo.UpdateStatus(ctx, payload.OrderID, model.StatusPaid); err != nil {
 		return err
 	}
 
-	order, err := s.repo.GetByID(ctx, payload.OrderID)
+	order, err = s.repo.GetByID(ctx, payload.OrderID)
 	if err != nil {
 		return err
 	}
@@ -128,32 +136,119 @@ func (s *Service) HandlePaymentProcessed(ctx context.Context, payload events.Pay
 		return err
 	}
 
-	return s.producer.Publish(ctx, events.TopicOrderStatusChanged, events.OrderStatusChanged{
-		OrderID: order.ID,
-		Status:  model.StatusPaid,
-	})
+	return s.publishStatus(ctx, order.ID, model.StatusPaid)
 }
 
 func (s *Service) HandlePaymentFailed(ctx context.Context, payload events.PaymentFailed) error {
-	if err := s.repo.UpdateStatus(ctx, payload.OrderID, model.StatusCancelled); err != nil {
+	return s.cancelOrder(ctx, payload.OrderID, payload.Reason, false)
+}
+
+func (s *Service) HandlePreparationFailed(ctx context.Context, payload events.OrderPreparationFailed) error {
+	return s.cancelWithRefund(ctx, payload.OrderID, payload.UserID, payload.Reason)
+}
+
+func (s *Service) HandleDeliveryFailed(ctx context.Context, payload events.DeliveryFailed) error {
+	return s.cancelWithRefund(ctx, payload.OrderID, payload.UserID, payload.Reason)
+}
+
+func (s *Service) HandlePaymentRefunded(ctx context.Context, payload events.PaymentRefunded) error {
+	order, err := s.repo.GetByID(ctx, payload.OrderID)
+	if err != nil {
 		return err
 	}
-	return s.producer.Publish(ctx, events.TopicOrderStatusChanged, events.OrderStatusChanged{
-		OrderID: payload.OrderID,
-		Status:  model.StatusCancelled,
-	})
+	if order.Status == model.StatusRefunded {
+		return nil
+	}
+	if err := s.repo.UpdateStatus(ctx, payload.OrderID, model.StatusRefunded); err != nil {
+		return err
+	}
+	return s.publishStatus(ctx, payload.OrderID, model.StatusRefunded)
 }
 
 func (s *Service) HandleCourierAssigned(ctx context.Context, payload events.CourierAssigned) error {
+	order, err := s.repo.GetByID(ctx, payload.OrderID)
+	if err != nil {
+		return err
+	}
+	if order.Status == model.StatusDelivering || order.Status == model.StatusDelivered || isTerminal(order.Status) {
+		return nil
+	}
 	return s.repo.AssignCourier(ctx, payload.OrderID, payload.CourierID)
 }
 
 func (s *Service) HandleOrderDelivered(ctx context.Context, payload events.OrderDelivered) error {
+	order, err := s.repo.GetByID(ctx, payload.OrderID)
+	if err != nil {
+		return err
+	}
+	if order.Status == model.StatusDelivered {
+		return nil
+	}
 	if err := s.repo.UpdateStatus(ctx, payload.OrderID, model.StatusDelivered); err != nil {
 		return err
 	}
-	return s.producer.Publish(ctx, events.TopicOrderStatusChanged, events.OrderStatusChanged{
-		OrderID: payload.OrderID,
-		Status:  model.StatusDelivered,
+	return s.publishStatus(ctx, payload.OrderID, model.StatusDelivered)
+}
+
+func (s *Service) cancelWithRefund(ctx context.Context, orderID, userID, reason string) error {
+	order, err := s.repo.GetByID(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if isTerminal(order.Status) {
+		return nil
+	}
+
+	refundRequired := order.Status == model.StatusPaid || order.Status == model.StatusDelivering
+
+	if err := s.cancelOrder(ctx, orderID, reason, refundRequired); err != nil {
+		return err
+	}
+
+	if !refundRequired {
+		return nil
+	}
+
+	return s.producer.Publish(ctx, events.TopicPaymentRefundRequested, events.PaymentRefundRequested{
+		OrderID: orderID,
+		UserID:  userID,
+		Amount:  order.TotalAmount,
+		Reason:  reason,
 	})
+}
+
+func (s *Service) cancelOrder(ctx context.Context, orderID, reason string, refundRequired bool) error {
+	order, err := s.repo.GetByID(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if isTerminal(order.Status) {
+		return nil
+	}
+
+	if err := s.repo.UpdateStatus(ctx, orderID, model.StatusCancelled); err != nil {
+		return err
+	}
+
+	if err := s.publishStatus(ctx, orderID, model.StatusCancelled); err != nil {
+		return err
+	}
+
+	return s.producer.Publish(ctx, events.TopicOrderCancelled, events.OrderCancelled{
+		OrderID:        orderID,
+		UserID:         order.UserID,
+		Reason:         reason,
+		RefundRequired: refundRequired,
+	})
+}
+
+func (s *Service) publishStatus(ctx context.Context, orderID, status string) error {
+	return s.producer.Publish(ctx, events.TopicOrderStatusChanged, events.OrderStatusChanged{
+		OrderID: orderID,
+		Status:  status,
+	})
+}
+
+func isTerminal(status string) bool {
+	return status == model.StatusCancelled || status == model.StatusRefunded || status == model.StatusDelivered
 }

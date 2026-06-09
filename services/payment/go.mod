@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/google/uuid v1.6.0
+	github.com/kostayne/go-microservice/pkg/config v0.0.0
 	github.com/kostayne/go-microservice/pkg/events v0.0.0
 	github.com/kostayne/go-microservice/pkg/kafka v0.0.0
 	github.com/lib/pq v1.10.9
@@ -17,6 +18,7 @@ require (
 )
 
 replace (
+	github.com/kostayne/go-microservice/pkg/config => ../../pkg/config
 	github.com/kostayne/go-microservice/pkg/events => ../../pkg/events
 	github.com/kostayne/go-microservice/pkg/kafka => ../../pkg/kafka
 )

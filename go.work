@@ -4,6 +4,7 @@ use (
 	./pkg/events
 	./pkg/kafka
 	./pkg/auth
+	./pkg/config
 	./services/user
 	./services/restaurant
 	./services/order

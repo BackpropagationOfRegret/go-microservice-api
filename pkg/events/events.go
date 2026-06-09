@@ -3,15 +3,39 @@ package events
 import "time"
 
 const (
-	TopicOrderCreated      = "order.created"
-	TopicPaymentProcessed  = "payment.processed"
-	TopicPaymentFailed     = "payment.failed"
-	TopicOrderPaid         = "order.paid"
-	TopicOrderReady        = "order.ready"
-	TopicCourierAssigned   = "courier.assigned"
-	TopicOrderDelivered    = "order.delivered"
-	TopicOrderStatusChanged = "order.status.changed"
+	TopicOrderCreated           = "order.created"
+	TopicPaymentProcessed       = "payment.processed"
+	TopicPaymentFailed          = "payment.failed"
+	TopicPaymentRefundRequested = "payment.refund.requested"
+	TopicPaymentRefunded        = "payment.refunded"
+	TopicOrderPaid              = "order.paid"
+	TopicOrderPreparationFailed = "order.preparation.failed"
+	TopicOrderReady             = "order.ready"
+	TopicDeliveryFailed         = "delivery.failed"
+	TopicCourierAssigned        = "courier.assigned"
+	TopicOrderDelivered         = "order.delivered"
+	TopicOrderCancelled         = "order.cancelled"
+	TopicOrderStatusChanged     = "order.status.changed"
 )
+
+// AllTopics returns every Kafka topic used by the platform (for init scripts).
+func AllTopics() []string {
+	return []string{
+		TopicOrderCreated,
+		TopicPaymentProcessed,
+		TopicPaymentFailed,
+		TopicPaymentRefundRequested,
+		TopicPaymentRefunded,
+		TopicOrderPaid,
+		TopicOrderPreparationFailed,
+		TopicOrderReady,
+		TopicDeliveryFailed,
+		TopicCourierAssigned,
+		TopicOrderDelivered,
+		TopicOrderCancelled,
+		TopicOrderStatusChanged,
+	}
+}
 
 type Envelope struct {
 	Type      string    `json:"type"`
@@ -70,4 +94,38 @@ type OrderDelivered struct {
 type OrderStatusChanged struct {
 	OrderID string `json:"order_id"`
 	Status  string `json:"status"`
+}
+
+type PaymentRefundRequested struct {
+	OrderID string  `json:"order_id"`
+	UserID  string  `json:"user_id"`
+	Amount  float64 `json:"amount"`
+	Reason  string  `json:"reason"`
+}
+
+type PaymentRefunded struct {
+	OrderID              string  `json:"order_id"`
+	RefundTransactionID  string  `json:"refund_transaction_id"`
+	Amount               float64 `json:"amount"`
+	Reason               string  `json:"reason"`
+}
+
+type OrderPreparationFailed struct {
+	OrderID      string `json:"order_id"`
+	RestaurantID string `json:"restaurant_id"`
+	UserID       string `json:"user_id"`
+	Reason       string `json:"reason"`
+}
+
+type DeliveryFailed struct {
+	OrderID string `json:"order_id"`
+	UserID  string `json:"user_id"`
+	Reason  string `json:"reason"`
+}
+
+type OrderCancelled struct {
+	OrderID        string `json:"order_id"`
+	UserID         string `json:"user_id"`
+	Reason         string `json:"reason"`
+	RefundRequired bool   `json:"refund_required"`
 }

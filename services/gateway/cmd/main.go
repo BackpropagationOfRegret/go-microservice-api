@@ -3,32 +3,35 @@ package main
 import (
 	"log"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/go-chi/cors"
+	"github.com/kostayne/go-microservice/pkg/config"
 	"github.com/kostayne/go-microservice/services/gateway/internal/handler"
 )
 
 func main() {
-	port := env("PORT", "8080")
-	jwtSecret := env("JWT_SECRET", "dev-secret-change-me")
+	log.Printf("api-gateway starting (APP_ENV=%s)", config.AppEnv())
+
+	port := config.String("PORT", "8080")
+	jwtSecret := config.String("JWT_SECRET", "dev-secret-change-me")
 
 	cfg := handler.Config{
-		UserURL:       env("USER_SVC_URL", "http://localhost:8081"),
-		RestaurantURL: env("RESTAURANT_SVC_URL", "http://localhost:8082"),
-		OrderURL:      env("ORDER_SVC_URL", "http://localhost:8083"),
-		PaymentURL:    env("PAYMENT_SVC_URL", "http://localhost:8084"),
-		DeliveryURL:   env("DELIVERY_SVC_URL", "http://localhost:8085"),
+		UserURL:       config.String("USER_SVC_URL", "http://localhost:8081"),
+		RestaurantURL: config.String("RESTAURANT_SVC_URL", "http://localhost:8082"),
+		OrderURL:      config.String("ORDER_SVC_URL", "http://localhost:8083"),
+		PaymentURL:    config.String("PAYMENT_SVC_URL", "http://localhost:8084"),
+		DeliveryURL:   config.String("DELIVERY_SVC_URL", "http://localhost:8085"),
 		JWTSecret:     jwtSecret,
 	}
 
 	h := handler.New(cfg)
+	origins := config.CORSOrigins(true)
 	corsHandler := cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   origins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
-		AllowCredentials: true,
+		AllowCredentials: !containsWildcard(origins),
 		MaxAge:           300,
 	})
 
@@ -40,16 +43,16 @@ func main() {
 	}
 
 	log.Printf("api-gateway listening on :%s", port)
-	log.Printf("openapi spec: http://localhost:%s/openapi.yaml", port)
-	log.Printf("scalar docs:  http://localhost:%s/docs", port)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve: %v", err)
 	}
 }
 
-func env(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+func containsWildcard(origins []string) bool {
+	for _, o := range origins {
+		if o == "*" {
+			return true
+		}
 	}
-	return fallback
+	return false
 }

@@ -5,10 +5,9 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"os"
-	"strings"
 	"time"
 
+	"github.com/kostayne/go-microservice/pkg/config"
 	"github.com/kostayne/go-microservice/pkg/events"
 	"github.com/kostayne/go-microservice/pkg/kafka"
 	"github.com/kostayne/go-microservice/services/restaurant/internal/consumer"
@@ -18,9 +17,14 @@ import (
 )
 
 func main() {
-	dsn := env("DATABASE_URL", "postgres://food:food@localhost:5432/restaurant_db?sslmode=disable")
-	port := env("PORT", "8082")
-	brokers := strings.Split(env("KAFKA_BROKERS", "localhost:9092"), ",")
+	log.Printf("restaurant-svc starting (APP_ENV=%s)", config.AppEnv())
+
+	dsn := config.String("DATABASE_URL", "postgres://food:food@localhost:5432/restaurant_db?sslmode=disable")
+	port := config.String("PORT", "8082")
+	brokers := config.KafkaBrokers()
+	cookDuration := config.Duration("KITCHEN_COOK_DURATION", 3*time.Second)
+	prepFailRate := config.Float("KITCHEN_FAIL_RATE", 0.0)
+	seedData := config.Bool("SEED_DATA", config.IsDev())
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -34,22 +38,23 @@ func main() {
 	if err := repo.Migrate(ctx); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
-	if err := repo.Seed(ctx); err != nil {
-		log.Fatalf("seed: %v", err)
+	if seedData {
+		if err := repo.Seed(ctx); err != nil {
+			log.Fatalf("seed: %v", err)
+		}
 	}
 
 	readyProducer := kafka.NewProducer(brokers, events.TopicOrderReady)
+	failedProducer := kafka.NewProducer(brokers, events.TopicOrderPreparationFailed)
 	defer readyProducer.Close()
+	defer failedProducer.Close()
 
-	kitchen := &consumer.Kitchen{}
+	kitchen := consumer.NewKitchen(repo, cookDuration, prepFailRate, readyProducer, failedProducer)
 	orderPaidConsumer := kafka.NewConsumer(brokers, events.TopicOrderPaid, "restaurant-svc")
 	defer orderPaidConsumer.Close()
 
 	go func() {
-		err := orderPaidConsumer.Run(context.Background(), func(ctx context.Context, env events.Envelope) error {
-			return kitchen.HandleOrderPaid(ctx, readyProducer, env)
-		})
-		if err != nil {
+		if err := orderPaidConsumer.Run(context.Background(), kitchen.HandleOrderPaid); err != nil {
 			log.Printf("kafka consumer stopped: %v", err)
 		}
 	}()
@@ -66,11 +71,4 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve: %v", err)
 	}
-}
-
-func env(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

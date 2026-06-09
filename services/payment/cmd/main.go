@@ -5,11 +5,9 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"os"
-	"strconv"
-	"strings"
 	"time"
 
+	"github.com/kostayne/go-microservice/pkg/config"
 	"github.com/kostayne/go-microservice/pkg/events"
 	"github.com/kostayne/go-microservice/pkg/kafka"
 	"github.com/kostayne/go-microservice/services/payment/internal/consumer"
@@ -19,10 +17,15 @@ import (
 )
 
 func main() {
-	dsn := env("DATABASE_URL", "postgres://food:food@localhost:5432/payment_db?sslmode=disable")
-	port := env("PORT", "8084")
-	brokers := strings.Split(env("KAFKA_BROKERS", "localhost:9092"), ",")
-	failRate, _ := strconv.ParseFloat(env("PAYMENT_FAIL_RATE", "0.05"), 64)
+	log.Printf("payment-svc starting (APP_ENV=%s)", config.AppEnv())
+
+	dsn := config.String("DATABASE_URL", "postgres://food:food@localhost:5432/payment_db?sslmode=disable")
+	port := config.String("PORT", "8084")
+	brokers := config.KafkaBrokers()
+	failRate := config.Float("PAYMENT_FAIL_RATE", 0.0)
+	processLatency := config.Duration("PAYMENT_PROCESS_LATENCY", 500*time.Millisecond)
+	refundLatency := config.Duration("PAYMENT_REFUND_LATENCY", 300*time.Millisecond)
+	paymentMethod := config.String("PAYMENT_METHOD", "card")
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -39,16 +42,29 @@ func main() {
 
 	processedProducer := kafka.NewProducer(brokers, events.TopicPaymentProcessed)
 	failedProducer := kafka.NewProducer(brokers, events.TopicPaymentFailed)
+	refundedProducer := kafka.NewProducer(brokers, events.TopicPaymentRefunded)
 	defer processedProducer.Close()
 	defer failedProducer.Close()
+	defer refundedProducer.Close()
 
-	processor := consumer.NewProcessor(repo, processedProducer, failedProducer, failRate)
+	processor := consumer.NewProcessor(
+		repo, processedProducer, failedProducer, refundedProducer,
+		failRate, processLatency, refundLatency, paymentMethod,
+	)
+
 	orderCreatedConsumer := kafka.NewConsumer(brokers, events.TopicOrderCreated, "payment-svc")
+	refundConsumer := kafka.NewConsumer(brokers, events.TopicPaymentRefundRequested, "payment-svc-refund")
 	defer orderCreatedConsumer.Close()
+	defer refundConsumer.Close()
 
 	go func() {
 		if err := orderCreatedConsumer.Run(context.Background(), processor.HandleOrderCreated); err != nil {
 			log.Printf("kafka consumer stopped: %v", err)
+		}
+	}()
+	go func() {
+		if err := refundConsumer.Run(context.Background(), processor.HandleRefundRequested); err != nil {
+			log.Printf("refund consumer stopped: %v", err)
 		}
 	}()
 
@@ -64,11 +80,4 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve: %v", err)
 	}
-}
-
-func env(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
