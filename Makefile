@@ -1,4 +1,4 @@
-.PHONY: up down build logs tidy test demo docs
+.PHONY: up down build logs tidy test demo docs frontend-dev
 
 up:
 	docker compose up --build -d
@@ -23,10 +23,14 @@ test:
 	done
 
 docs:
+	@echo "Frontend:             http://localhost:3000"
 	@echo "OpenAPI:              http://localhost:8090/openapi.yaml"
 	@echo "Scalar:               http://localhost:8090/docs"
 	@echo "Scalar (via Traefik): http://localhost/docs"
 	@echo "Traefik dashboard:    http://localhost:8088"
+
+frontend-dev:
+	cd frontend && npm run dev
 
 demo:
 	@echo "=== Register user ==="
