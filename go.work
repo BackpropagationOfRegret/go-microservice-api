@@ -1,0 +1,14 @@
+go 1.22
+
+use (
+	./pkg/events
+	./pkg/kafka
+	./pkg/auth
+	./services/user
+	./services/restaurant
+	./services/order
+	./services/payment
+	./services/delivery
+	./services/notification
+	./services/gateway
+)

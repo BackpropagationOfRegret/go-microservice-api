@@ -1,0 +1,527 @@
+openapi: 3.1.0
+info:
+  title: Food Delivery Platform API
+  version: 1.0.0
+  description: |
+    Публичный API платформы доставки еды (BFF / API Gateway).
+
+    Асинхронный сценарий заказа:
+    `POST /api/orders` → оплата → кухня → курьер → доставка.
+    Статус заказа обновляется через Kafka; опрашивайте `GET /api/orders/{id}`.
+
+servers:
+  - url: http://localhost:8090
+    description: API Gateway напрямую
+  - url: http://localhost
+    description: API через Traefik (entrypoint :80, не dashboard)
+
+tags:
+  - name: System
+  - name: Auth
+  - name: Restaurants
+  - name: Orders
+  - name: Users
+  - name: Delivery
+
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      operationId: healthCheck
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Регистрация пользователя
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            example:
+              email: demo@food.local
+              password: secret123
+              name: Demo User
+              phone: "+79001234567"
+      responses:
+        "201":
+          description: Пользователь создан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Email уже занят
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Вход
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Успешный вход
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/restaurants:
+    get:
+      tags: [Restaurants]
+      summary: Список ресторанов
+      operationId: listRestaurants
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Restaurant"
+
+  /api/restaurants/{id}:
+    get:
+      tags: [Restaurants]
+      summary: Ресторан по ID
+      operationId: getRestaurant
+      parameters:
+        - $ref: "#/components/parameters/RestaurantId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Restaurant"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/restaurants/{id}/menu:
+    get:
+      tags: [Restaurants]
+      summary: Меню ресторана
+      operationId: getRestaurantMenu
+      parameters:
+        - $ref: "#/components/parameters/RestaurantId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MenuItem"
+
+  /api/couriers:
+    get:
+      tags: [Delivery]
+      summary: Список курьеров
+      operationId: listCouriers
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Courier"
+
+  /api/users/me:
+    get:
+      tags: [Users]
+      summary: Текущий пользователь
+      operationId: getCurrentUser
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/users/me/orders:
+    get:
+      tags: [Orders]
+      summary: История заказов текущего пользователя
+      operationId: listMyOrders
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Order"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/orders:
+    post:
+      tags: [Orders]
+      summary: Создать заказ
+      description: |
+        Запускает сагу: валидация пользователя и меню → `OrderCreated` → оплата → доставка.
+      operationId: createOrder
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+            example:
+              restaurant_id: "6cfa1bab-b2d0-45b3-8ecd-a6103776b142"
+              items:
+                - menu_item_id: "66691a66-0d93-47b7-a848-e8198b9f1c79"
+                  quantity: 1
+                - menu_item_id: "f2641737-eadf-4b39-be9b-85f19ac4ce69"
+                  quantity: 2
+      responses:
+        "201":
+          description: Заказ создан (статус PENDING)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/orders/{id}:
+    get:
+      tags: [Orders]
+      summary: Заказ с деталями оплаты
+      operationId: getOrder
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderWithPayment"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Токен из `/api/auth/login` или `/api/auth/register`
+
+  parameters:
+    RestaurantId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    OrderId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Требуется авторизация
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Не найдено
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, service]
+      properties:
+        status:
+          type: string
+          example: ok
+        service:
+          type: string
+          example: api-gateway
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    RegisterRequest:
+      type: object
+      required: [email, password, name]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 6
+        name:
+          type: string
+        phone:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    AuthResponse:
+      type: object
+      required: [user, token]
+      properties:
+        token:
+          type: string
+          description: JWT access token
+        user:
+          $ref: "#/components/schemas/User"
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        phone:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    Restaurant:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        address:
+          type: string
+        is_open:
+          type: boolean
+        open_from:
+          type: string
+          example: "09:00"
+        open_to:
+          type: string
+          example: "22:00"
+
+    MenuItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        restaurant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        price:
+          type: number
+          format: double
+        available:
+          type: boolean
+
+    Courier:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          type: string
+          enum: [AVAILABLE, BUSY]
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+
+    OrderItem:
+      type: object
+      properties:
+        menu_item_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+        price:
+          type: number
+          format: double
+
+    OrderStatus:
+      type: string
+      enum:
+        - PENDING
+        - PAID
+        - PREPARING
+        - READY
+        - DELIVERING
+        - DELIVERED
+        - CANCELLED
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        restaurant_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        total_amount:
+          type: number
+          format: double
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+        courier_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Payment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        order_id:
+          type: string
+          format: uuid
+        amount:
+          type: number
+          format: double
+        method:
+          type: string
+          example: card
+        status:
+          type: string
+          enum: [SUCCESS, FAILED]
+        transaction_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    OrderWithPayment:
+      allOf:
+        - $ref: "#/components/schemas/Order"
+        - type: object
+          properties:
+            payment:
+              $ref: "#/components/schemas/Payment"
+
+    CreateOrderRequest:
+      type: object
+      required: [restaurant_id, items]
+      properties:
+        restaurant_id:
+          type: string
+          format: uuid
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [menu_item_id, quantity]
+            properties:
+              menu_item_id:
+                type: string
+                format: uuid
+              quantity:
+                type: integer
+                minimum: 1

@@ -1,0 +1,23 @@
+package model
+
+import "time"
+
+type User struct {
+	ID           string    `json:"id"`
+	Email        string    `json:"email"`
+	PasswordHash string    `json:"-"`
+	Name         string    `json:"name"`
+	Phone        string    `json:"phone"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type Address struct {
+	ID        string  `json:"id"`
+	UserID    string  `json:"user_id"`
+	Label     string  `json:"label"`
+	Street    string  `json:"street"`
+	City      string  `json:"city"`
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	IsDefault bool    `json:"is_default"`
+}

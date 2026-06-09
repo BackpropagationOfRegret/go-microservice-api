@@ -1,0 +1,14 @@
+http:
+  routers:
+    gateway:
+      rule: "PathPrefix(`/`)"
+      service: gateway
+      entryPoints:
+        - web
+      priority: 1
+
+  services:
+    gateway:
+      loadBalancer:
+        servers:
+          - url: "http://gateway:8080"
