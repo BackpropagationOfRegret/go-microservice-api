@@ -40,14 +40,14 @@ func main() {
 	corsHandler := cors.Handler(cors.Options{
 		AllowedOrigins:   origins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Requested-With"},
 		AllowCredentials: !containsWildcard(origins),
 		MaxAge:           300,
 	})
 
 	srv := &http.Server{
 		Addr:         ":" + port,
-		Handler:      telemetry.WrapHTTP(serviceName, corsHandler(h.Routes())),
+		Handler:      corsHandler(telemetry.WrapHTTP(serviceName, h.Routes())),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}

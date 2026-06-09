@@ -1,7 +1,7 @@
 x-service-env: &service-env
   APP_ENV: ${APP_ENV:-dev}
   KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
-  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+  JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
   JWT_TTL: ${JWT_TTL:-24h}
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
   OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
@@ -211,7 +211,8 @@ services:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8090}
+        # In-container DNS; do not use localhost here (see make frontend-dev for host dev).
+        API_URL: http://gateway:8080
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     depends_on:

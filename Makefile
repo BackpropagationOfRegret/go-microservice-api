@@ -6,7 +6,8 @@ COMPOSE := docker compose --env-file $(ENV_FILE)
 
 env-init:
 	@test -f $(ENV_FILE) || cp deploy/env/$(ENV).env.example $(ENV_FILE) 2>/dev/null || cp deploy/env/dev.env $(ENV_FILE)
-	@echo "Using $(ENV_FILE)"
+	@cp $(ENV_FILE) .env
+	@echo "Using $(ENV_FILE) (synced to .env for docker compose)"
 
 up: env-init
 	$(COMPOSE) up --build -d
@@ -41,7 +42,7 @@ docs:
 	@echo "Environments: make up ENV=dev|stage|prod (uses deploy/env/\$$ENV.env)"
 
 frontend-dev:
-	cd frontend && npm run dev
+	cd frontend && API_URL=http://localhost:8090 npm run dev
 
 demo:
 	@echo "=== Register user ==="

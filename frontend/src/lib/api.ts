@@ -6,7 +6,8 @@ import type {
   User,
 } from "./types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8090";
+// Empty → relative /api/* (proxied by Next.js rewrites, same origin, no CORS).
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 type RequestOptions = {
   method?: string;
