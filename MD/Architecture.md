@@ -43,6 +43,102 @@
 
 ---
 
+## Архитектурные диаграммы
+
+### Контекст (C1)
+
+```mermaid
+flowchart LR
+    User([Клиент])
+    FE[Frontend<br/>Next.js :3000]
+    GW[API Gateway<br/>:8090]
+    subgraph Backend["Backend (Go)"]
+        US[user-svc]
+        RS[restaurant-svc]
+        OS[order-svc]
+        PS[payment-svc]
+        DS[delivery-svc]
+        NS[notification-svc]
+    end
+    Kafka[(Kafka)]
+    PG[(PostgreSQL)]
+    Jaeger[Jaeger]
+
+    User --> FE
+    FE -->|HTTP /api/*| GW
+    GW --> US & RS & OS & PS & DS
+    OS & PS & RS & DS & NS <-->|events| Kafka
+    US & RS & OS & PS & DS --> PG
+    Backend -.->|OTLP traces| Jaeger
+```
+
+### Контейнеры и инфраструктура (C2)
+
+```mermaid
+flowchart TB
+    subgraph Client
+        Browser[Browser]
+        Next[frontend :3000]
+    end
+
+    subgraph Entry
+        Traefik[Traefik :80]
+        Gateway[gateway :8090<br/>JWT, BFF, OpenAPI]
+    end
+
+    subgraph Services["Микросервисы"]
+        User[user-svc :8081<br/>user_db]
+        Restaurant[restaurant-svc :8082<br/>restaurant_db]
+        Order[order-svc :8083<br/>order_db]
+        Payment[payment-svc :8084<br/>payment_db]
+        Delivery[delivery-svc :8085<br/>delivery_db]
+        Notification[notification-svc :8086<br/>без БД]
+    end
+
+    subgraph Infra
+        PG[(PostgreSQL)]
+        Kafka[(Kafka)]
+        Jaeger[Jaeger :16686]
+    end
+
+    Browser --> Next
+    Next -->|HTTP| Gateway
+    Traefik -.->|опционально| Gateway
+
+    Gateway --> User & Restaurant & Order & Payment & Delivery
+
+    User & Restaurant & Order & Payment & Delivery --> PG
+    Order & Payment & Restaurant & Delivery & Notification <--> Kafka
+
+    Order -->|HTTP validate| User
+    Order -->|HTTP validate| Restaurant
+    Delivery -->|HTTP GET order| Order
+
+    Services -.-> Jaeger
+```
+
+### Деплой (Docker Compose)
+
+```mermaid
+flowchart TB
+    subgraph docker_compose["docker-compose.yml"]
+        PG[postgres:16]
+        K[kafka:3.8]
+        J[jaeger]
+        T[traefik]
+        subgraph app["Go services + frontend"]
+            S1[user] & S2[restaurant] & S3[order] & S4[payment] & S5[delivery] & S6[notification] & GW[gateway] & FE[frontend]
+        end
+    end
+    PG --> S1 & S2 & S3 & S4 & S5
+    K --> S2 & S3 & S4 & S5 & S6
+    FE --> GW
+    GW --> S1 & S2 & S3 & S4 & S5
+    T --> GW
+```
+
+---
+
 ## Два способа связи между сервисами
 
 ### 1. Синхронно — HTTP + JSON
@@ -111,23 +207,23 @@
 
 `order-svc` — не оркестратор, а **владелец сущности «заказ»**: хранит статус и публикует/слушает события, но не командует другими сервисами по HTTP.
 
-```
-                    ┌─────────────┐
-  order.created ───►│ payment-svc │
-                    └──────┬──────┘
-                           │ payment.processed
-                           ▼
-                    ┌─────────────┐
-                    │  order-svc  │──► order.paid
-                    └─────────────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-      restaurant-svc  notification  (логи)
-              │
-              │ order.ready
-              ▼
-       delivery-svc ──► courier.assigned ──► order.delivered
+```mermaid
+flowchart LR
+    OC[order.created] --> Pay[payment-svc]
+    Pay --> PP[payment.processed]
+    Pay --> PF[payment.failed]
+    PP --> Ord[order-svc]
+    PF --> Ord
+    Ord --> OP[order.paid]
+    OP --> Rest[restaurant-svc]
+    Rest --> OR[order.ready]
+    OR --> Del[delivery-svc]
+    Del --> CA[courier.assigned]
+    Del --> OD[order.delivered]
+    CA --> Ord
+    OD --> Ord
+
+    OC & PP & OP & OR & CA & OD -.-> Notif[notification-svc]
 ```
 
 **Плюс:** слабая связность — добавили `notification-svc`, никого не переписывали.  
@@ -136,6 +232,52 @@
 ---
 
 ## Бизнес-сценарий: заказ от начала до конца
+
+### Поток заказа (sequence)
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant FE as Frontend
+    participant GW as Gateway
+    participant Order as order-svc
+    participant User as user-svc
+    participant Rest as restaurant-svc
+    participant Kafka
+    participant Pay as payment-svc
+    participant Kitchen as restaurant-svc
+    participant Del as delivery-svc
+    participant Notif as notification-svc
+
+    Client->>FE: Оформить заказ
+    FE->>GW: POST /api/orders
+    GW->>Order: proxy
+    Order->>User: validate user
+    Order->>Rest: validate menu
+    Order->>Order: INSERT PENDING
+    Order->>Kafka: order.created
+    Order-->>Client: 201 PENDING
+
+    Kafka->>Pay: order.created
+    Pay->>Pay: simulate payment
+    Pay->>Kafka: payment.processed
+    Kafka->>Notif: уведомление
+
+    Kafka->>Order: payment.processed
+    Order->>Order: status PAID
+    Order->>Kafka: order.paid
+
+    Kafka->>Kitchen: order.paid
+    Kitchen->>Kafka: order.ready
+
+    Kafka->>Del: order.ready
+    Del->>Order: GET order (user_id)
+    Del->>Kafka: courier.assigned
+    Del->>Kafka: order.delivered
+
+    Kafka->>Order: update status
+    Kafka->>Notif: уведомления
+```
 
 ### Шаг 0 — клиент оформляет заказ (синхронно)
 
@@ -215,11 +357,18 @@ Frontend → POST /api/orders → api-gateway → order-svc
 
 ### Статусы заказа
 
-```
-PENDING → PAID → DELIVERING → DELIVERED
-
-PENDING → CANCELLED          (оплата не прошла)
-PAID → CANCELLED → REFUNDED  (кухня / доставка не смогли выполнить)
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING: POST /orders
+    PENDING --> PAID: payment.processed
+    PENDING --> CANCELLED: payment.failed
+    PAID --> DELIVERING: courier.assigned
+    PAID --> CANCELLED: preparation/delivery failed
+    DELIVERING --> DELIVERED: order.delivered
+    CANCELLED --> REFUNDED: payment.refunded
+    DELIVERED --> [*]
+    REFUNDED --> [*]
+    CANCELLED --> [*]
 ```
 
 Промежуточные `PREPARING` / `READY` в order-svc не выставляются — они живут в событиях кухни и доставки. Фронтенд опрашивает `GET /api/orders/{id}` каждые 3 секунды.
@@ -318,6 +467,31 @@ order.preparation.failed / delivery.failed
 | Уведомления | notification-svc | Только из Kafka (своей БД нет) |
 
 Дублирование намеренно минимальное: в событиях передаётся только нужное (`order_id`, `user_id`, суммы).
+
+```mermaid
+flowchart TB
+    subgraph user_db
+        U[Users, JWT, addresses]
+    end
+    subgraph restaurant_db
+        R[Restaurants, menu]
+    end
+    subgraph order_db
+        O[Orders, statuses]
+    end
+    subgraph payment_db
+        P[Payments, refunds]
+    end
+    subgraph delivery_db
+        D[Couriers]
+    end
+
+    UserSvc[user-svc] --- user_db
+    RestSvc[restaurant-svc] --- restaurant_db
+    OrderSvc[order-svc] --- order_db
+    PaySvc[payment-svc] --- payment_db
+    DelSvc[delivery-svc] --- delivery_db
+```
 
 ---
 
