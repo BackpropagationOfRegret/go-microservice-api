@@ -7,45 +7,30 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/kostayne/go-microservice/services/restaurant/internal/db"
 	"github.com/kostayne/go-microservice/services/restaurant/internal/model"
-	"github.com/lib/pq"
+	restaurantsql "github.com/kostayne/go-microservice/services/restaurant/sql"
 )
 
 var ErrNotFound = errors.New("not found")
 
 type Repository struct {
-	db *sql.DB
+	dbConn *sql.DB
+	q      *db.Queries
 }
 
-func New(db *sql.DB) *Repository {
-	return &Repository{db: db}
+func New(dbConn *sql.DB) *Repository {
+	return &Repository{dbConn: dbConn, q: db.New(dbConn)}
 }
 
 func (r *Repository) Migrate(ctx context.Context) error {
-	_, err := r.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS restaurants (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			address TEXT NOT NULL,
-			is_open BOOLEAN NOT NULL DEFAULT TRUE,
-			open_from TEXT NOT NULL DEFAULT '09:00',
-			open_to TEXT NOT NULL DEFAULT '22:00'
-		);
-		CREATE TABLE IF NOT EXISTS menu_items (
-			id TEXT PRIMARY KEY,
-			restaurant_id TEXT NOT NULL REFERENCES restaurants(id),
-			name TEXT NOT NULL,
-			description TEXT,
-			price DOUBLE PRECISION NOT NULL,
-			available BOOLEAN NOT NULL DEFAULT TRUE
-		);
-	`)
+	_, err := r.dbConn.ExecContext(ctx, restaurantsql.Schema)
 	return err
 }
 
 func (r *Repository) Seed(ctx context.Context) error {
-	var count int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM restaurants`).Scan(&count); err != nil {
+	count, err := r.q.CountRestaurants(ctx)
+	if err != nil {
 		return err
 	}
 	if count > 0 {
@@ -53,25 +38,31 @@ func (r *Repository) Seed(ctx context.Context) error {
 	}
 
 	restID := uuid.New().String()
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO restaurants (id, name, address, is_open) VALUES ($1, $2, $3, TRUE)`,
-		restID, "Pizza Palace", "123 Main St",
-	)
-	if err != nil {
+	if err := r.q.CreateRestaurant(ctx, db.CreateRestaurantParams{
+		ID:      restID,
+		Name:    "Pizza Palace",
+		Address: "123 Main St",
+		IsOpen:  true,
+	}); err != nil {
 		return err
 	}
 
-	items := []struct{ name, desc string; price float64 }{
+	items := []struct {
+		name, desc string
+		price      float64
+	}{
 		{"Margherita", "Classic tomato and mozzarella", 12.99},
 		{"Pepperoni", "Spicy pepperoni pizza", 14.99},
 		{"Caesar Salad", "Fresh romaine with parmesan", 8.99},
 	}
 	for _, item := range items {
-		_, err := r.db.ExecContext(ctx,
-			`INSERT INTO menu_items (id, restaurant_id, name, description, price) VALUES ($1, $2, $3, $4, $5)`,
-			uuid.New().String(), restID, item.name, item.desc, item.price,
-		)
-		if err != nil {
+		if err := r.q.CreateMenuItem(ctx, db.CreateMenuItemParams{
+			ID:           uuid.New().String(),
+			RestaurantID: restID,
+			Name:         item.name,
+			Description:  toNullString(item.desc),
+			Price:        item.price,
+		}); err != nil {
 			return err
 		}
 	}
@@ -79,76 +70,91 @@ func (r *Repository) Seed(ctx context.Context) error {
 }
 
 func (r *Repository) ListRestaurants(ctx context.Context) ([]model.Restaurant, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, address, is_open, open_from, open_to FROM restaurants`,
-	)
+	rows, err := r.q.ListRestaurants(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var list []model.Restaurant
-	for rows.Next() {
-		var rest model.Restaurant
-		if err := rows.Scan(&rest.ID, &rest.Name, &rest.Address, &rest.IsOpen, &rest.OpenFrom, &rest.OpenTo); err != nil {
-			return nil, err
-		}
-		list = append(list, rest)
+	list := make([]model.Restaurant, 0, len(rows))
+	for _, row := range rows {
+		list = append(list, toRestaurantModel(row))
 	}
-	return list, rows.Err()
+	return list, nil
 }
 
 func (r *Repository) GetRestaurant(ctx context.Context, id string) (*model.Restaurant, error) {
-	rest := &model.Restaurant{}
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, name, address, is_open, open_from, open_to FROM restaurants WHERE id = $1`, id,
-	).Scan(&rest.ID, &rest.Name, &rest.Address, &rest.IsOpen, &rest.OpenFrom, &rest.OpenTo)
+	rest, err := r.q.GetRestaurant(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	return rest, err
-}
-
-func (r *Repository) ListMenu(ctx context.Context, restaurantID string) ([]model.MenuItem, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, restaurant_id, name, description, price, available FROM menu_items WHERE restaurant_id = $1`,
-		restaurantID,
-	)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	m := toRestaurantModel(rest)
+	return &m, nil
+}
 
-	var items []model.MenuItem
-	for rows.Next() {
-		var m model.MenuItem
-		if err := rows.Scan(&m.ID, &m.RestaurantID, &m.Name, &m.Description, &m.Price, &m.Available); err != nil {
-			return nil, err
-		}
-		items = append(items, m)
+func (r *Repository) ListMenu(ctx context.Context, restaurantID string) ([]model.MenuItem, error) {
+	rows, err := r.q.ListMenuByRestaurant(ctx, restaurantID)
+	if err != nil {
+		return nil, err
 	}
-	return items, rows.Err()
+	items := make([]model.MenuItem, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, toMenuItemModel(row))
+	}
+	return items, nil
 }
 
 func (r *Repository) GetMenuItems(ctx context.Context, restaurantID string, ids []string) ([]model.MenuItem, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("no menu items requested")
 	}
-	query := `SELECT id, restaurant_id, name, description, price, available FROM menu_items
-		WHERE restaurant_id = $1 AND id = ANY($2) AND available = TRUE`
-	rows, err := r.db.QueryContext(ctx, query, restaurantID, pq.Array(ids))
+	rows, err := r.q.GetMenuItems(ctx, db.GetMenuItemsParams{
+		RestaurantID: restaurantID,
+		Ids:          ids,
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var items []model.MenuItem
-	for rows.Next() {
-		var m model.MenuItem
-		if err := rows.Scan(&m.ID, &m.RestaurantID, &m.Name, &m.Description, &m.Price, &m.Available); err != nil {
-			return nil, err
-		}
-		items = append(items, m)
+	items := make([]model.MenuItem, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, toMenuItemModel(row))
 	}
-	return items, rows.Err()
+	return items, nil
+}
+
+func toRestaurantModel(r db.Restaurant) model.Restaurant {
+	return model.Restaurant{
+		ID:       r.ID,
+		Name:     r.Name,
+		Address:  r.Address,
+		IsOpen:   r.IsOpen,
+		OpenFrom: r.OpenFrom,
+		OpenTo:   r.OpenTo,
+	}
+}
+
+func toMenuItemModel(m db.MenuItem) model.MenuItem {
+	return model.MenuItem{
+		ID:           m.ID,
+		RestaurantID: m.RestaurantID,
+		Name:         m.Name,
+		Description:  fromNullString(m.Description),
+		Price:        m.Price,
+		Available:    m.Available,
+	}
+}
+
+func toNullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func fromNullString(ns sql.NullString) string {
+	if !ns.Valid {
+		return ""
+	}
+	return ns.String
 }

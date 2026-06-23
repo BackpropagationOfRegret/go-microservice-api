@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/kostayne/go-microservice/services/payment/internal/db"
+	paymentsql "github.com/kostayne/go-microservice/services/payment/sql"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -30,29 +32,16 @@ type Payment struct {
 }
 
 type Repository struct {
-	db *sql.DB
+	dbConn *sql.DB
+	q      *db.Queries
 }
 
-func New(db *sql.DB) *Repository {
-	return &Repository{db: db}
+func New(dbConn *sql.DB) *Repository {
+	return &Repository{dbConn: dbConn, q: db.New(dbConn)}
 }
 
 func (r *Repository) Migrate(ctx context.Context) error {
-	_, err := r.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS payments (
-			id TEXT PRIMARY KEY,
-			order_id TEXT UNIQUE NOT NULL,
-			amount DOUBLE PRECISION NOT NULL,
-			method TEXT NOT NULL DEFAULT 'card',
-			status TEXT NOT NULL,
-			transaction_id TEXT,
-			refund_transaction_id TEXT,
-			refund_reason TEXT,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);
-		ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_transaction_id TEXT;
-		ALTER TABLE payments ADD COLUMN IF NOT EXISTS refund_reason TEXT;
-	`)
+	_, err := r.dbConn.ExecContext(ctx, paymentsql.Schema)
 	return err
 }
 
@@ -61,39 +50,69 @@ func (r *Repository) Create(ctx context.Context, p *Payment) error {
 		p.ID = uuid.New().String()
 	}
 	p.CreatedAt = time.Now().UTC()
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO payments (id, order_id, amount, method, status, transaction_id, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		p.ID, p.OrderID, p.Amount, p.Method, p.Status, p.TransactionID, p.CreatedAt,
-	)
-	return err
+	return r.q.CreatePayment(ctx, db.CreatePaymentParams{
+		ID:            p.ID,
+		OrderID:       p.OrderID,
+		Amount:        p.Amount,
+		Method:        p.Method,
+		Status:        p.Status,
+		TransactionID: toNullString(p.TransactionID),
+		CreatedAt:     p.CreatedAt,
+	})
 }
 
 func (r *Repository) GetByOrderID(ctx context.Context, orderID string) (*Payment, error) {
-	p := &Payment{}
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, order_id, amount, method, status,
-		        COALESCE(transaction_id,''), COALESCE(refund_transaction_id,''), COALESCE(refund_reason,''), created_at
-		 FROM payments WHERE order_id = $1`,
-		orderID,
-	).Scan(&p.ID, &p.OrderID, &p.Amount, &p.Method, &p.Status, &p.TransactionID, &p.RefundTransactionID, &p.RefundReason, &p.CreatedAt)
+	p, err := r.q.GetPaymentByOrderID(ctx, orderID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	return p, err
+	if err != nil {
+		return nil, err
+	}
+	return toPaymentModel(p), nil
 }
 
 func (r *Repository) MarkRefunded(ctx context.Context, orderID, refundTxID, reason string) error {
-	res, err := r.db.ExecContext(ctx,
-		`UPDATE payments SET status = $1, refund_transaction_id = $2, refund_reason = $3 WHERE order_id = $4 AND status = $5`,
-		StatusRefunded, refundTxID, reason, orderID, StatusSuccess,
-	)
+	n, err := r.q.MarkPaymentRefunded(ctx, db.MarkPaymentRefundedParams{
+		Status:              StatusRefunded,
+		RefundTransactionID: toNullString(refundTxID),
+		RefundReason:        toNullString(reason),
+		OrderID:             orderID,
+		Status_2:            StatusSuccess,
+	})
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
 	if n == 0 {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func toPaymentModel(p db.Payment) *Payment {
+	return &Payment{
+		ID:                  p.ID,
+		OrderID:             p.OrderID,
+		Amount:              p.Amount,
+		Method:              p.Method,
+		Status:              p.Status,
+		TransactionID:       fromNullString(p.TransactionID),
+		RefundTransactionID: fromNullString(p.RefundTransactionID),
+		RefundReason:        fromNullString(p.RefundReason),
+		CreatedAt:           p.CreatedAt,
+	}
+}
+
+func toNullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func fromNullString(ns sql.NullString) string {
+	if !ns.Valid {
+		return ""
+	}
+	return ns.String
 }

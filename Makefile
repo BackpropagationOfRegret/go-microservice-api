@@ -1,8 +1,9 @@
-.PHONY: up down down-clean build logs tidy test demo docs frontend-dev env-init
+.PHONY: up down down-clean build logs tidy test demo docs frontend-dev env-init sqlc
 
 ENV ?= dev
 ENV_FILE := deploy/env/$(ENV).env
 COMPOSE := docker compose --env-file $(ENV_FILE)
+SQLC_SERVICES := user order restaurant payment delivery
 
 env-init:
 	@test -f $(ENV_FILE) || cp deploy/env/$(ENV).env.example $(ENV_FILE) 2>/dev/null || cp deploy/env/dev.env $(ENV_FILE)
@@ -25,8 +26,14 @@ logs:
 	$(COMPOSE) logs -f
 
 tidy:
-	@for dir in pkg/events pkg/kafka pkg/auth pkg/config pkg/telemetry services/user services/restaurant services/order services/payment services/delivery services/notification services/gateway; do \
+	@for dir in tools pkg/events pkg/kafka pkg/auth pkg/config pkg/telemetry services/user services/restaurant services/order services/payment services/delivery services/notification services/gateway; do \
 		(cd $$dir && go mod tidy); \
+	done
+
+sqlc:
+	@for svc in $(SQLC_SERVICES); do \
+		echo "==> services/$$svc"; \
+		(cd services/$$svc && GOWORK=off go run -modfile=$(CURDIR)/tools/go.mod github.com/sqlc-dev/sqlc/cmd/sqlc generate); \
 	done
 
 test:

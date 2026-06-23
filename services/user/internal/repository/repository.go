@@ -7,40 +7,24 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/kostayne/go-microservice/services/user/internal/db"
 	"github.com/kostayne/go-microservice/services/user/internal/model"
+	usersql "github.com/kostayne/go-microservice/services/user/sql"
 )
 
 var ErrNotFound = errors.New("not found")
 
 type Repository struct {
-	db *sql.DB
+	dbConn *sql.DB
+	q      *db.Queries
 }
 
-func New(db *sql.DB) *Repository {
-	return &Repository{db: db}
+func New(dbConn *sql.DB) *Repository {
+	return &Repository{dbConn: dbConn, q: db.New(dbConn)}
 }
 
 func (r *Repository) Migrate(ctx context.Context) error {
-	_, err := r.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS users (
-			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE NOT NULL,
-			password_hash TEXT NOT NULL,
-			name TEXT NOT NULL,
-			phone TEXT,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);
-		CREATE TABLE IF NOT EXISTS addresses (
-			id TEXT PRIMARY KEY,
-			user_id TEXT NOT NULL REFERENCES users(id),
-			label TEXT NOT NULL,
-			street TEXT NOT NULL,
-			city TEXT NOT NULL,
-			latitude DOUBLE PRECISION NOT NULL DEFAULT 0,
-			longitude DOUBLE PRECISION NOT NULL DEFAULT 0,
-			is_default BOOLEAN NOT NULL DEFAULT FALSE
-		);
-	`)
+	_, err := r.dbConn.ExecContext(ctx, usersql.Schema)
 	return err
 }
 
@@ -52,10 +36,13 @@ func (r *Repository) CreateUser(ctx context.Context, email, passwordHash, name, 
 		Name:         name,
 		Phone:        phone,
 	}
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO users (id, email, password_hash, name, phone) VALUES ($1, $2, $3, $4, $5)`,
-		u.ID, u.Email, u.PasswordHash, u.Name, u.Phone,
-	)
+	err := r.q.CreateUser(ctx, db.CreateUserParams{
+		ID:           u.ID,
+		Email:        u.Email,
+		PasswordHash: u.PasswordHash,
+		Name:         u.Name,
+		Phone:        toNullString(u.Phone),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("insert user: %w", err)
 	}
@@ -63,62 +50,89 @@ func (r *Repository) CreateUser(ctx context.Context, email, passwordHash, name, 
 }
 
 func (r *Repository) GetByEmail(ctx context.Context, email string) (*model.User, error) {
-	u := &model.User{}
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, email, password_hash, name, phone, created_at FROM users WHERE email = $1`, email,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Phone, &u.CreatedAt)
+	u, err := r.q.GetUserByEmail(ctx, email)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	return u, nil
+	return toUserModel(u), nil
 }
 
 func (r *Repository) GetByID(ctx context.Context, id string) (*model.User, error) {
-	u := &model.User{}
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, email, password_hash, name, phone, created_at FROM users WHERE id = $1`, id,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Name, &u.Phone, &u.CreatedAt)
+	u, err := r.q.GetUserByID(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	return u, nil
+	return toUserModel(u), nil
 }
 
 func (r *Repository) AddAddress(ctx context.Context, addr *model.Address) error {
 	if addr.ID == "" {
 		addr.ID = uuid.New().String()
 	}
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO addresses (id, user_id, label, street, city, latitude, longitude, is_default)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		addr.ID, addr.UserID, addr.Label, addr.Street, addr.City, addr.Latitude, addr.Longitude, addr.IsDefault,
-	)
-	return err
+	return r.q.CreateAddress(ctx, db.CreateAddressParams{
+		ID:        addr.ID,
+		UserID:    addr.UserID,
+		Label:     addr.Label,
+		Street:    addr.Street,
+		City:      addr.City,
+		Latitude:  addr.Latitude,
+		Longitude: addr.Longitude,
+		IsDefault: addr.IsDefault,
+	})
 }
 
 func (r *Repository) ListAddresses(ctx context.Context, userID string) ([]model.Address, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, user_id, label, street, city, latitude, longitude, is_default FROM addresses WHERE user_id = $1`,
-		userID,
-	)
+	rows, err := r.q.ListAddressesByUser(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var addrs []model.Address
-	for rows.Next() {
-		var a model.Address
-		if err := rows.Scan(&a.ID, &a.UserID, &a.Label, &a.Street, &a.City, &a.Latitude, &a.Longitude, &a.IsDefault); err != nil {
-			return nil, err
-		}
-		addrs = append(addrs, a)
+	addrs := make([]model.Address, 0, len(rows))
+	for _, row := range rows {
+		addrs = append(addrs, toAddressModel(row))
 	}
-	return addrs, rows.Err()
+	return addrs, nil
+}
+
+func toUserModel(u db.User) *model.User {
+	return &model.User{
+		ID:           u.ID,
+		Email:        u.Email,
+		PasswordHash: u.PasswordHash,
+		Name:         u.Name,
+		Phone:        fromNullString(u.Phone),
+		CreatedAt:    u.CreatedAt,
+	}
+}
+
+func toAddressModel(a db.Address) model.Address {
+	return model.Address{
+		ID:        a.ID,
+		UserID:    a.UserID,
+		Label:     a.Label,
+		Street:    a.Street,
+		City:      a.City,
+		Latitude:  a.Latitude,
+		Longitude: a.Longitude,
+		IsDefault: a.IsDefault,
+	}
+}
+
+func toNullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func fromNullString(ns sql.NullString) string {
+	if !ns.Valid {
+		return ""
+	}
+	return ns.String
 }

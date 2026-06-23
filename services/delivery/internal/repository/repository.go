@@ -6,52 +6,52 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
+	"github.com/kostayne/go-microservice/services/delivery/internal/db"
 	"github.com/kostayne/go-microservice/services/delivery/internal/model"
+	deliverysql "github.com/kostayne/go-microservice/services/delivery/sql"
 )
 
 var ErrNoCourier = errors.New("no available courier")
 
 type Repository struct {
-	db *sql.DB
+	dbConn *sql.DB
+	q      *db.Queries
 }
 
-func New(db *sql.DB) *Repository {
-	return &Repository{db: db}
+func New(dbConn *sql.DB) *Repository {
+	return &Repository{dbConn: dbConn, q: db.New(dbConn)}
 }
 
 func (r *Repository) Migrate(ctx context.Context) error {
-	_, err := r.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS couriers (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			status TEXT NOT NULL DEFAULT 'AVAILABLE',
-			latitude DOUBLE PRECISION NOT NULL DEFAULT 0,
-			longitude DOUBLE PRECISION NOT NULL DEFAULT 0
-		);
-	`)
+	_, err := r.dbConn.ExecContext(ctx, deliverysql.Schema)
 	return err
 }
 
 func (r *Repository) Seed(ctx context.Context) error {
-	var count int
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM couriers`).Scan(&count); err != nil {
+	count, err := r.q.CountCouriers(ctx)
+	if err != nil {
 		return err
 	}
 	if count > 0 {
 		return nil
 	}
 
-	couriers := []struct{ name string; lat, lng float64 }{
+	couriers := []struct {
+		name      string
+		lat, lng  float64
+	}{
 		{"Alex Rider", 55.7558, 37.6173},
 		{"Maria Swift", 55.7512, 37.6184},
 		{"John Express", 55.7601, 37.6200},
 	}
 	for _, c := range couriers {
-		_, err := r.db.ExecContext(ctx,
-			`INSERT INTO couriers (id, name, status, latitude, longitude) VALUES ($1, $2, $3, $4, $5)`,
-			uuid.New().String(), c.name, model.CourierAvailable, c.lat, c.lng,
-		)
-		if err != nil {
+		if err := r.q.CreateCourier(ctx, db.CreateCourierParams{
+			ID:        uuid.New().String(),
+			Name:      c.name,
+			Status:    model.CourierAvailable,
+			Latitude:  c.lat,
+			Longitude: c.lng,
+		}); err != nil {
 			return err
 		}
 	}
@@ -59,38 +59,41 @@ func (r *Repository) Seed(ctx context.Context) error {
 }
 
 func (r *Repository) FindAvailableCourier(ctx context.Context) (*model.Courier, error) {
-	c := &model.Courier{}
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, name, status, latitude, longitude FROM couriers WHERE status = $1 LIMIT 1`,
-		model.CourierAvailable,
-	).Scan(&c.ID, &c.Name, &c.Status, &c.Latitude, &c.Longitude)
+	c, err := r.q.FindAvailableCourier(ctx, model.CourierAvailable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoCourier
 	}
-	return c, err
-}
-
-func (r *Repository) SetCourierStatus(ctx context.Context, id, status string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE couriers SET status = $1 WHERE id = $2`, status, id)
-	return err
-}
-
-func (r *Repository) ListCouriers(ctx context.Context) ([]model.Courier, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, status, latitude, longitude FROM couriers`,
-	)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return toCourierModel(c), nil
+}
 
-	var list []model.Courier
-	for rows.Next() {
-		var c model.Courier
-		if err := rows.Scan(&c.ID, &c.Name, &c.Status, &c.Latitude, &c.Longitude); err != nil {
-			return nil, err
-		}
-		list = append(list, c)
+func (r *Repository) SetCourierStatus(ctx context.Context, id, status string) error {
+	return r.q.SetCourierStatus(ctx, db.SetCourierStatusParams{
+		Status: status,
+		ID:     id,
+	})
+}
+
+func (r *Repository) ListCouriers(ctx context.Context) ([]model.Courier, error) {
+	rows, err := r.q.ListCouriers(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return list, rows.Err()
+	list := make([]model.Courier, 0, len(rows))
+	for _, row := range rows {
+		list = append(list, *toCourierModel(row))
+	}
+	return list, nil
+}
+
+func toCourierModel(c db.Courier) *model.Courier {
+	return &model.Courier{
+		ID:        c.ID,
+		Name:      c.Name,
+		Status:    c.Status,
+		Latitude:  c.Latitude,
+		Longitude: c.Longitude,
+	}
 }
